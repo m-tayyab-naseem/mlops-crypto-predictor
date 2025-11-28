@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  api-server:
+    volumes:
+      - ./:/usr/local/airflow
+  dag-processor:
+    volumes:
+      - ./data:/usr/local/airflow/data
+  scheduler:
+    volumes:
+      - ./:/usr/local/airflow
+  triggerer:
+    volumes:
+      - ./data:/usr/local/airflow/data

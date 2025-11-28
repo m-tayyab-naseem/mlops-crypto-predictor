@@ -1,0 +1,8 @@
+[core]
+    remote = dagshub-storage
+['remote "origin"']
+    url = https://dagshub.com/api/v1/repo-buckets/s3/m-tayyab-naseem
+['remote "dagshub-storage"']
+    url = s3://mlops-crypto-predictor
+    endpointurl = https://dagshub.com/api/v1/repo-buckets/s3/m-tayyab-naseem
+    region = us-east-1
