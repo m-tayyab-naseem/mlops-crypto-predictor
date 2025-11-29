@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.exceptions import AirflowException
+from airflow.models import Variable
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -14,7 +15,6 @@ import json
 from pathlib import Path
 import sys
 import os
-from airflow.models import Variable
 
 # Add scripts to path
 sys.path.append('/usr/local/airflow/scripts')
@@ -45,7 +45,7 @@ dag = DAG(
     'crypto_price_prediction_pipeline',
     default_args=default_args,
     description='End-to-end MLOps pipeline for crypto price prediction with DagHub',
-    schedule='0 */6 * * *',  # Run every 6 hours
+        schedule='0 */6 * * *',  # Run every 6 hours
     catchup=False,
     tags=['mlops', 'crypto', 'prediction', 'phase-1'],
 )
@@ -114,21 +114,9 @@ def extract_crypto_data(**context):
         context['task_instance'].xcom_push(key='extraction_timestamp', value=timestamp)
 
         return str(raw_file_path)
-
+        
     except requests.exceptions.RequestException as e:
-        # Attempt to fallback to the most recent cached raw file if network/DNS fails
-        print(f"Network request failed: {e}. Attempting to use cached data if available...")
-        cached_files = sorted(raw_data_dir.glob('bitcoin_raw_*.csv'), key=lambda p: p.stat().st_mtime, reverse=True)
-        if cached_files:
-            latest = cached_files[0]
-            df = pd.read_csv(latest)
-            context['task_instance'].xcom_push(key='raw_file_path', value=str(latest))
-            context['task_instance'].xcom_push(key='record_count', value=len(df))
-            context['task_instance'].xcom_push(key='extraction_timestamp', value=latest.stem.split('_')[-1])
-            print(f"Using cached file: {latest.name} (records: {len(df)})")
-            return str(latest)
-        else:
-            raise AirflowException(f"API request failed and no cached data available: {str(e)}")
+        raise AirflowException(f"API request failed: {str(e)}")
     except Exception as e:
         raise AirflowException(f"Data extraction failed: {str(e)}")
 
@@ -322,6 +310,41 @@ def upload_to_storage(**context):
     return result
 
 
+def train_model(**context):
+    """
+    Task 5: Train ML models with hyperparameter tuning
+    """
+    from train_model import train_pipeline
+    
+    print("\n" + "="*70)
+    print("TASK 5: MODEL TRAINING")
+    print("="*70)
+    
+    # Get processed file path
+    processed_file_path = context['task_instance'].xcom_pull(
+        task_ids='transform_data',
+        key='processed_file_path'
+    )
+    
+    # Train models
+    result = train_pipeline(
+        data_file=processed_file_path,
+        output_dir='/usr/local/airflow/models'
+    )
+    
+    print(f"\n✅ Training Complete")
+    print(f"  → Best Model: {result['best_model']}")
+    print(f"  → Test RMSE: {result['test_metrics']['rmse']:.6f}")
+    print(f"  → Test R²: {result['test_metrics']['r2']:.4f}")
+    
+    # Push results to XCom
+    context['task_instance'].xcom_push(key='training_result', value=result)
+    context['task_instance'].xcom_push(key='best_model', value=result['best_model'])
+    context['task_instance'].xcom_push(key='model_file', value=result['model_file'])
+    
+    return result
+
+
 def pipeline_summary(**context):
     """
     Task 5: Generate pipeline execution summary
@@ -346,6 +369,8 @@ def pipeline_summary(**context):
     
     storage_data = context['task_instance'].xcom_pull(task_ids='upload_to_storage', key='storage_result')
     
+    training_data = context['task_instance'].xcom_pull(task_ids='train_model', key='training_result')
+    
     # Print summary
     print(f"\n📊 Execution Time: {datetime.now().isoformat()}")
     print(f"\n1. Data Extraction:")
@@ -365,6 +390,12 @@ def pipeline_summary(**context):
     print(f"   ✓ DVC: {Path(storage_data['dvc_file']).name if storage_data['dvc_file'] else 'Not versioned'}")
     print(f"   ✓ Backend: {storage_data['storage_backend']}")
     
+    print(f"\n5. Model Training:")
+    print(f"   ✓ Best Model: {training_data['best_model']}")
+    print(f"   ✓ Test RMSE: {training_data['test_metrics']['rmse']:.6f}")
+    print(f"   ✓ Test R²: {training_data['test_metrics']['r2']:.4f}")
+    print(f"   ✓ Features: {training_data['feature_count']}")
+    
     print("\n" + "="*70)
     print("✅ PIPELINE COMPLETED SUCCESSFULLY")
     print("="*70 + "\n")
@@ -376,7 +407,8 @@ def pipeline_summary(**context):
         'extraction': extraction_data,
         'quality': quality_data,
         'transformation': transform_data,
-        'storage': storage_data
+        'storage': storage_data,
+        'training': training_data
     }
     
     # Save summary
@@ -419,5 +451,11 @@ summary_task = PythonOperator(
     dag=dag,
 )
 
+train_task = PythonOperator(
+    task_id='train_model',
+    python_callable=train_model,
+    dag=dag,
+)
+
 # Set task dependencies
-extract_task >> validate_task >> transform_task >> storage_task >> summary_task
+extract_task >> validate_task >> transform_task >> storage_task >> train_task >> summary_task
