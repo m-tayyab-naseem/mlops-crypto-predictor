@@ -1,0 +1,5 @@
+outs:
+- md5: dfa17aa69a51ec89049ed0486df5ab31
+  size: 547083
+  hash: md5
+  path: bitcoin_processed_20251129_164455.csv
