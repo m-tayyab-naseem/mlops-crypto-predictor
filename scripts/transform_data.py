@@ -8,6 +8,9 @@ from datetime import datetime
 from ydata_profiling import ProfileReport
 import mlflow
 import os
+import sys
+from contextlib import redirect_stderr
+from io import StringIO
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -97,7 +100,9 @@ def create_target_variable(df, column='priceUsd', horizon=1):
     Target: percentage change in next 'horizon' hours
     """
     print(f"  → Creating target variable (horizon: {horizon}h)...")
-    df['target_price_change'] = df[column].pct_change(periods=horizon).shift(-horizon)
+    # Calculate future price change: (future_price - current_price) / current_price
+    future_price = df[column].shift(-horizon)
+    df['target_price_change'] = (future_price - df[column]) / df[column]
     
     # Also create binary target (up/down)
     df['target_direction'] = (df['target_price_change'] > 0).astype(int)
@@ -163,18 +168,66 @@ def transform_data(raw_file_path, output_dir='/usr/local/airflow/data/processed'
     # Generate data profiling report
     print("\n6. Generating Data Profiling Report...")
     try:
-        profile = ProfileReport(
-            df, 
-            title="Bitcoin Price Data - Feature Engineering Report",
-            explorative=True,
-            minimal=False
-        )
+        # Clean dataframe for profiling - ensure all columns are proper types
+        df_profile = df.copy()
         
-        profile_path = output_path / f'data_profile_{timestamp}.html'
-        profile.to_file(profile_path)
+        # Replace infinities with NaN
+        df_profile = df_profile.replace([np.inf, -np.inf], np.nan)
+        
+        # Convert datetime columns to string to avoid profiling issues
+        for col in df_profile.select_dtypes(include=['datetime64']).columns:
+            df_profile[col] = df_profile[col].astype(str)
+        
+        # Ensure all numeric columns are float64 (ydata_profiling can have issues with other types)
+        for col in df_profile.select_dtypes(include=[np.number]).columns:
+            if df_profile[col].dtype != 'float64':
+                try:
+                    df_profile[col] = pd.to_numeric(df_profile[col], errors='coerce').astype('float64')
+                except (ValueError, TypeError):
+                    # If conversion fails, keep original type
+                    pass
+        
+        # Suppress stderr output from ydata_profiling (progress bars use tqdm which writes to stderr)
+        # Use file descriptor-level redirection to catch all output, including from tqdm
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        old_stderr_fd = os.dup(sys.stderr.fileno())
+        
+        try:
+            # Redirect stderr at file descriptor level (catches tqdm output)
+            os.dup2(devnull_fd, sys.stderr.fileno())
+            
+            # Also set environment variable as backup
+            old_tqdm_disable = os.environ.get('TQDM_DISABLE', None)
+            os.environ['TQDM_DISABLE'] = '1'
+            
+            try:
+                # Use minimal mode for more reliable profiling
+                profile = ProfileReport(
+                    df_profile, 
+                    title="Bitcoin Price Data - Feature Engineering Report",
+                    explorative=True,
+                    minimal=True  # Use minimal mode to avoid type-related errors
+                )
+                
+                profile_path = output_path / f'data_profile_{timestamp}.html'
+                profile.to_file(profile_path)
+            finally:
+                # Restore stderr file descriptor
+                os.dup2(old_stderr_fd, sys.stderr.fileno())
+                os.close(old_stderr_fd)
+                
+                # Restore environment variable
+                if old_tqdm_disable is None:
+                    os.environ.pop('TQDM_DISABLE', None)
+                else:
+                    os.environ['TQDM_DISABLE'] = old_tqdm_disable
+        finally:
+            os.close(devnull_fd)
+        
         print(f"  ✅ Profile report: {profile_path.name}")
     except Exception as e:
         print(f"  ⚠️  Warning: Could not generate profile report: {str(e)}")
+        print(f"  → This is non-critical - data transformation completed successfully")
         profile_path = None
     
     # Log to MLflow
