@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - test
+  workflow_dispatch:  # Allow manual triggering
 
 jobs:
   model-training-test:
@@ -74,7 +75,7 @@ jobs:
           fi
           
           echo "Training with: $LATEST_DATA"
-          python scripts/train_model.py "$LATEST_DATA" models/ > training_output.txt
+          python scripts/train_model.py "$LATEST_DATA" --output-dir models/ > training_output.txt
           
           # Extract metrics
           echo "## Training Results" > report.md
@@ -169,7 +170,7 @@ jobs:
           cml comment create cml_report.md
       
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: training-results
           path: |
