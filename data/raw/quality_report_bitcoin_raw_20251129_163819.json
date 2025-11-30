@@ -1,0 +1,40 @@
+{
+  "file": "bitcoin_raw_20251129_163819.csv",
+  "timestamp": "2025-11-29T16:38:21.806674",
+  "total_records": 707,
+  "total_columns": 5,
+  "null_checks": {
+    "priceUsd": {
+      "null_count": 0,
+      "null_percentage": 0.0,
+      "threshold": 0.01,
+      "status": "PASS"
+    },
+    "time": {
+      "null_count": 0,
+      "null_percentage": 0.0,
+      "threshold": 0.01,
+      "status": "PASS"
+    },
+    "date": {
+      "null_count": 0,
+      "null_percentage": 0.0,
+      "threshold": 0.01,
+      "status": "PASS"
+    }
+  },
+  "schema_validation": {
+    "priceUsd": "PRESENT",
+    "time": "PRESENT",
+    "date": "PRESENT",
+    "priceUsd_dtype": "float64",
+    "time_dtype": "int64",
+    "date_dtype": "object"
+  },
+  "data_validation": {
+    "min_records_required": 10,
+    "records_present": 707,
+    "invalid_prices": 0
+  },
+  "status": "PASSED"
+}

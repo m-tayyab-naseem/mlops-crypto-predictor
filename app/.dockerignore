@@ -1,0 +1,46 @@
+cat > .dockerignore << 'EOF'
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+venv/
+.env
+
+# Data
+data/
+*.csv
+
+# Git
+.git/
+.gitignore
+.dvc/
+
+# Airflow
+dags/
+logs/
+.airflow*/
+
+# Tests
+tests/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Documentation
+*.md
+docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+EOF

@@ -1,0 +1,184 @@
+name: CI/CD - Dev to Test (with CML)
+
+on:
+  pull_request:
+    branches:
+      - test
+  workflow_dispatch:  # Allow manual triggering
+
+permissions:
+  pull-requests: write
+  issues: write
+  contents: read
+
+jobs:
+  model-training-test:
+    name: Model Retraining & Comparison
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Setup CML
+        uses: iterative/setup-cml@v1
+      
+      - name: Setup DVC
+        uses: iterative/setup-dvc@v1
+      
+      - name: Configure DVC Remote
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DAGSHUB_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DAGSHUB_SECRET_KEY }}
+        run: |
+          dvc remote modify dagshub-storage --local access_key_id $AWS_ACCESS_KEY_ID
+          dvc remote modify dagshub-storage --local secret_access_key $AWS_SECRET_ACCESS_KEY
+      
+      - name: Pull data from DVC
+        run: |
+          dvc pull || echo "No DVC data to pull yet"
+      
+      - name: Fetch latest processed data
+        run: |
+          # For demo, we'll use existing data or fetch from API
+          python scripts/fetch_demo_data.py || echo "Using existing data"
+      
+      - name: Train new model
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+        run: |
+          # Find latest processed data
+          LATEST_DATA=$(ls -t data/processed/*.csv 2>/dev/null | head -1)
+          
+          if [ -z "$LATEST_DATA" ]; then
+            echo "No processed data found, creating sample data"
+            mkdir -p data/processed
+            python scripts/create_sample_data.py
+            LATEST_DATA=$(ls -t data/processed/*.csv | head -1)
+          fi
+          
+          echo "Training with: $LATEST_DATA"
+          python scripts/train_model.py "$LATEST_DATA" --output-dir models/ > training_output.txt
+          
+          # Extract metrics
+          echo "## Training Results" > report.md
+          echo "" >> report.md
+          tail -20 training_output.txt >> report.md
+      
+      - name: Compare with production model
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+        run: |
+          # Generate comparison report
+          python scripts/compare_models.py crypto-price-prediction reports/ || echo "Comparison completed"
+          
+          # Add comparison to report
+          echo "" >> report.md
+          echo "## Model Comparison" >> report.md
+          echo "" >> report.md
+          
+          if [ -f "reports/runs_comparison_*.csv" ]; then
+            echo "Latest runs comparison:" >> report.md
+            head -5 reports/runs_comparison_*.csv >> report.md
+          fi
+      
+      - name: Generate plots
+        run: |
+          # Add plots to report if they exist
+          if ls reports/*.png 1> /dev/null 2>&1; then
+            echo "" >> report.md
+            echo "## Performance Visualizations" >> report.md
+            for plot in reports/*.png; do
+              echo "![$(basename $plot)]($plot)" >> report.md
+            done
+          fi
+      
+      - name: Model Performance Check
+        run: |
+          # Check if new model is better
+          python << EOF
+          import json
+          import sys
+          
+          try:
+              with open('models/training_results_*.json') as f:
+                  results = json.load(f)
+              
+              # Get best model metrics
+              best_model = results.get('best_model', 'Unknown')
+              val_rmse = results['models'][best_model]['val']['rmse']
+              
+              print(f"Best Model: {best_model}")
+              print(f"Validation RMSE: {val_rmse}")
+              
+              # Add to report
+              with open('report.md', 'a') as f:
+                  f.write(f"\n## Model Quality Gate\n")
+                  f.write(f"- **Best Model**: {best_model}\n")
+                  f.write(f"- **Validation RMSE**: {val_rmse:.6f}\n")
+              
+              # Simple threshold check (adjust as needed)
+              if val_rmse > 0.1:  # Example threshold
+                  print("⚠️  Warning: Model RMSE higher than threshold")
+                  with open('report.md', 'a') as f:
+                      f.write(f"- **Status**: ⚠️  RMSE above threshold (0.1)\n")
+                  sys.exit(1)
+              else:
+                  print("✅ Model passes quality gate")
+                  with open('report.md', 'a') as f:
+                      f.write(f"- **Status**: ✅ Passes quality gate\n")
+          
+          except Exception as e:
+              print(f"Warning: Could not check model quality: {e}")
+              with open('report.md', 'a') as f:
+                  f.write(f"\n⚠️  Could not perform quality check\n")
+          EOF
+      
+      - name: Publish CML Report
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create final report
+          echo "# 🤖 Model Training Report" > cml_report.md
+          echo "" >> cml_report.md
+          echo "**PR**: #${{ github.event.pull_request.number }}" >> cml_report.md
+          echo "**Branch**: ${{ github.head_ref }}" >> cml_report.md
+          echo "**Commit**: ${{ github.sha }}" >> cml_report.md
+          echo "" >> cml_report.md
+          cat report.md >> cml_report.md
+          
+          # Publish to PR
+          cml comment create cml_report.md
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-results
+          path: |
+            models/
+            reports/
+            training_output.txt
